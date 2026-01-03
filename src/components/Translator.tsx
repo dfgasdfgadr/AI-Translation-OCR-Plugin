@@ -51,7 +51,7 @@ const Translator: React.FC<TranslatorProps> = ({ initialText = '', onOpenSetting
       setLoading(false);
     }
   };
-
+//
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       handleTranslate(inputText);
