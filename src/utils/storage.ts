@@ -3,6 +3,8 @@ export interface AppSettings {
   apiEndpoint: string;
   model: string;
   targetLang: 'en' | 'zh';
+  translateShortcut: string;
+  screenshotShortcut: string;
 }
 
 export const defaultSettings: AppSettings = {
@@ -10,6 +12,8 @@ export const defaultSettings: AppSettings = {
   apiEndpoint: 'https://api.openai.com/v1/chat/completions',
   model: 'gpt-3.5-turbo',
   targetLang: 'zh',
+  translateShortcut: 'Alt+T',
+  screenshotShortcut: 'Alt+Shift+S',
 };
 
 export const getSettings = async (): Promise<AppSettings> => {

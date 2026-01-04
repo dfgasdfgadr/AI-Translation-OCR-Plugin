@@ -1,6 +1,21 @@
 import Tesseract from 'tesseract.js';
+import { getSettings, AppSettings, defaultSettings } from '../utils/storage';
 
 console.log('AI Translate Content Script Loaded');
+
+let currentSettings: AppSettings = defaultSettings;
+
+// Initialize settings
+getSettings().then(settings => {
+  currentSettings = settings;
+});
+
+// Listen for settings changes
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'sync' && changes.settings) {
+    currentSettings = { ...defaultSettings, ...(changes.settings.newValue as AppSettings) };
+  }
+});
 
 let shadowHost: HTMLElement | null = null;
 let shadowRoot: ShadowRoot | null = null;
@@ -43,6 +58,25 @@ function getShadowRoot() {
       .bubble-error {
         color: #ef4444;
       }
+      .translate-btn {
+        position: absolute;
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 4px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        cursor: pointer;
+        padding: 4px 8px;
+        font-size: 14px;
+        color: #3b82f6;
+        font-weight: bold;
+        z-index: 1000;
+        transition: transform 0.1s;
+        pointer-events: auto;
+      }
+      .translate-btn:hover {
+        transform: scale(1.05);
+        background: #f9fafb;
+      }
       .overlay {
         position: fixed;
         top: 0;
@@ -60,20 +94,6 @@ function getShadowRoot() {
         position: absolute;
         pointer-events: none;
       }
-      .action-btn {
-        background: #2563eb;
-        color: white;
-        border: none;
-        padding: 6px 12px;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 12px;
-        margin-top: 8px;
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-      }
-      .action-btn:hover { background: #1d4ed8; }
       .close-btn {
         position: absolute;
         top: 4px;
@@ -93,9 +113,47 @@ function getShadowRoot() {
 
 // --- Text Translation ---
 
-
 // Store cleanup function for the bubble
 let cleanupBubble: (() => void) | null = null;
+let cleanupIcon: (() => void) | null = null;
+
+function removeTranslationIcon() {
+  if (cleanupIcon) {
+    cleanupIcon();
+    cleanupIcon = null;
+  }
+}
+
+function showTranslationIcon(text: string, x: number, y: number) {
+  removeTranslationIcon();
+
+  const root = getShadowRoot();
+  if (!root) return;
+
+  const btn = document.createElement('button');
+  btn.className = 'translate-btn';
+  btn.textContent = '译'; // Simple icon
+  btn.title = 'Translate';
+  
+  // Position slightly offset from cursor/selection
+  btn.style.left = `${x}px`;
+  btn.style.top = `${y + 10}px`;
+
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    removeTranslationIcon();
+    showTranslationBubble(text, x, y);
+  };
+  
+  // Prevent mousedown on the button from triggering document mousedown (which clears icon)
+  btn.onmousedown = (e) => e.stopPropagation();
+
+  root.appendChild(btn);
+
+  cleanupIcon = () => {
+    btn.remove();
+  };
+}
 
 function showTranslationBubble(text: string, x: number, y: number) {
   // Clean up any existing bubble first
@@ -195,16 +253,72 @@ function showTranslationBubble(text: string, x: number, y: number) {
   });
 }
 
+// Global Mouse Events for Selection
 document.addEventListener('mouseup', (_e) => {
-  const selection = window.getSelection();
-  const text = selection?.toString().trim();
-  if (text && text.length > 0) {
-      // We don't auto-show bubble on selection to avoid annoyance, 
-      // but we can listen for a shortcut or double click modifier.
-      // For this requirement: "选中文本后使用快捷键翻译" (Select text then use shortcut)
-      // So we wait for the shortcut command.
+  // Delay slightly to ensure selection is final
+  setTimeout(() => {
+    const selection = window.getSelection();
+    const text = selection?.toString().trim();
+
+    if (text && text.length > 0) {
+      // Calculate position
+      const range = selection?.getRangeAt(0);
+      const rect = range?.getBoundingClientRect();
+      if (rect) {
+        showTranslationIcon(text, rect.left + rect.width / 2, rect.bottom);
+      }
+    }
+  }, 10);
+});
+
+document.addEventListener('mousedown', (_e) => {
+  // Click anywhere else -> remove icon
+  removeTranslationIcon();
+});
+
+
+// --- Shortcut Logic ---
+
+function checkShortcut(e: KeyboardEvent, shortcutStr: string): boolean {
+  if (!shortcutStr) return false;
+  
+  const keys = shortcutStr.toUpperCase().split('+');
+  const mainKey = keys[keys.length - 1];
+  const modifiers = keys.slice(0, -1);
+
+  const eventKey = e.key.toUpperCase();
+  
+  // Check modifiers
+  const hasCtrl = modifiers.includes('CTRL');
+  const hasAlt = modifiers.includes('ALT');
+  const hasShift = modifiers.includes('SHIFT');
+  const hasMeta = modifiers.includes('META') || modifiers.includes('CMD');
+
+  if (e.ctrlKey !== hasCtrl) return false;
+  if (e.altKey !== hasAlt) return false;
+  if (e.shiftKey !== hasShift) return false;
+  if (e.metaKey !== hasMeta) return false;
+
+  // Check main key
+  return eventKey === mainKey;
+}
+
+window.addEventListener('keydown', (e) => {
+  if (checkShortcut(e, currentSettings.translateShortcut)) {
+    const selection = window.getSelection();
+    const text = selection?.toString().trim();
+    if (text) {
+      const range = selection?.getRangeAt(0);
+      const rect = range?.getBoundingClientRect();
+      if (rect) {
+        showTranslationBubble(text, rect.left, rect.bottom);
+      }
+    }
+  } else if (checkShortcut(e, currentSettings.screenshotShortcut)) {
+    startScreenshotMode();
   }
 });
+
 
 // --- Screenshot Logic ---
 
@@ -226,8 +340,8 @@ function startScreenshotMode() {
   selectionBox.style.display = 'none';
   overlayEl.appendChild(selectionBox);
 
-  overlayEl.addEventListener('mousedown', onMouseDown);
-  document.addEventListener('keydown', onEscKey);
+  overlayEl.addEventListener('mousedown', onMouseDownScreenshot);
+  document.addEventListener('keydown', onEscKeyScreenshot);
 }
 
 function stopScreenshotMode() {
@@ -236,16 +350,16 @@ function stopScreenshotMode() {
     overlayEl = null;
     selectionBox = null;
   }
-  document.removeEventListener('keydown', onEscKey);
+  document.removeEventListener('keydown', onEscKeyScreenshot);
 }
 
-function onEscKey(e: KeyboardEvent) {
+function onEscKeyScreenshot(e: KeyboardEvent) {
   if (e.key === 'Escape') {
     stopScreenshotMode();
   }
 }
 
-function onMouseDown(e: MouseEvent) {
+function onMouseDownScreenshot(e: MouseEvent) {
   isSelecting = true;
   startX = e.clientX;
   startY = e.clientY;
@@ -258,11 +372,11 @@ function onMouseDown(e: MouseEvent) {
     selectionBox.style.height = '0px';
   }
 
-  window.addEventListener('mousemove', onMouseMove);
-  window.addEventListener('mouseup', onMouseUp);
+  window.addEventListener('mousemove', onMouseMoveScreenshot);
+  window.addEventListener('mouseup', onMouseUpScreenshot);
 }
 
-function onMouseMove(e: MouseEvent) {
+function onMouseMoveScreenshot(e: MouseEvent) {
   if (!isSelecting || !selectionBox) return;
 
   const currentX = e.clientX;
@@ -279,10 +393,10 @@ function onMouseMove(e: MouseEvent) {
   selectionBox.style.top = `${top}px`;
 }
 
-async function onMouseUp(_e: MouseEvent) {
+async function onMouseUpScreenshot(_e: MouseEvent) {
   isSelecting = false;
-  window.removeEventListener('mousemove', onMouseMove);
-  window.removeEventListener('mouseup', onMouseUp);
+  window.removeEventListener('mousemove', onMouseMoveScreenshot);
+  window.removeEventListener('mouseup', onMouseUpScreenshot);
 
   if (!selectionBox) return;
 
@@ -384,19 +498,6 @@ chrome.runtime.onMessage.addListener((request, _sender, _sendResponse) => {
       const range = selection?.getRangeAt(0);
       const rect = range?.getBoundingClientRect();
       if (rect) {
-        // Calculate position relative to viewport + scroll
-        // But for fixed positioned bubble, we need viewport coordinates?
-        // Wait, shadowHost is fixed positioned at (0,0).
-        // So bubble.style.left/top are relative to viewport.
-        // rect.left is relative to viewport.
-        // rect.bottom is relative to viewport.
-        // window.scrollY is NOT needed if host is fixed.
-        
-        // Let's re-verify shadowHost position.
-        // shadowHost: position: fixed; top: 0; left: 0;
-        // So we should use clientX/Y directly or rect values directly.
-        // rect.left/bottom are relative to viewport.
-        
         showTranslationBubble(text, rect.left, rect.bottom);
       }
     }
